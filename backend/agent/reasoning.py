@@ -105,7 +105,17 @@ Conversation:
 {history}
 user: {user_text}
 
-Tools: check_availability(specialization,date), book_appointment(patient_id,doctor_id,date,time_slot), cancel_appointment(appointment_id), reschedule_appointment(appointment_id,new_date,new_time_slot), list_appointments(patient_id), search_doctors(specialization)
+IMPORTANT BOOKING FLOW:
+1. First collect specialization, date from user
+2. Call search_doctors(specialization) to find available doctors and get doctor_id
+3. Call check_availability(doctor_id, date) to get time slots
+4. Collect time_slot preference from user
+5. Call book_appointment(patient_id, doctor_id, date, time_slot) with REAL doctor_id and patient_id
+
+NEVER call book_appointment without a valid doctor_id from search_doctors results.
+ALWAYS include patient_id in book_appointment calls.
+
+Tools: search_doctors(specialization), check_availability(doctor_id,date), book_appointment(patient_id,doctor_id,date,time_slot), cancel_appointment(appointment_id), reschedule_appointment(appointment_id,new_date,new_time_slot), list_appointments(patient_id)
 {LANGUAGE_INSTRUCTIONS.get(language, '')}
 Return JSON: {{"reasoning":"why","intent":"book|cancel|reschedule|check_availability|list|greeting|clarification|confirmation|farewell","tool_calls":[],"response_text":"reply in {language}","slots_extracted":{{}},"needs_confirmation":false,"conversation_state":"greeting|collecting_info|confirming|executing|completed"}}"""
 
@@ -204,6 +214,10 @@ Return JSON: {{"reasoning":"why","intent":"book|cancel|reschedule|check_availabi
         specialization = slots.get("specialization")
         date = slots.get("date")
         time_slot = slots.get("time_slot")
+        doctor_id = slots.get("doctor_id")
+        doctor_name = slots.get("doctor_name")
+
+        doc_display = self._format_doctor_name(doctor_name, specialization)
 
         if not specialization:
             return self._make_response(language, "book", "collecting_info", slots, {
@@ -212,37 +226,103 @@ Return JSON: {{"reasoning":"why","intent":"book|cancel|reschedule|check_availabi
                 "ta": "எந்த வகை மருத்துவர்? இதய, தோல், பொது, எலும்பு, குழந்தை நிபுணர்.",
             })
 
+        if not doctor_id:
+            return self._make_response(language, "book", "collecting_info", slots, {
+                "en": f"Let me find available {specialization}s for you...",
+                "hi": f"उपलब्ध {specialization} खोज रहा हूं...",
+                "ta": f"கிடைக்கும் {specialization} தேடுகிறேன்...",
+            }, tool_calls=[{
+                "tool": "search_doctors",
+                "parameters": {"specialization": specialization}
+            }])
+
         if not date:
             return self._make_response(language, "book", "collecting_info", slots, {
-                "en": f"When would you like to see the {specialization}? Say 'tomorrow', 'day after tomorrow', or a date.",
-                "hi": f"{specialization} से कब मिलना चाहेंगे? कल, परसों, या तारीख बताएं।",
-                "ta": f"{specialization} எப்போது பார்க்க வேண்டும்? நாளை அல்லது தேதி சொல்லுங்கள்.",
+                "en": f"When would you like to see {doc_display}? Say 'tomorrow', 'day after tomorrow', or a specific date.",
+                "hi": f"{doc_display} से कब मिलना चाहेंगे? कल, परसों, या तारीख बताएं।",
+                "ta": f"{doc_display} எப்போது பார்க்க வேண்டும்? நாளை அல்லது தேதி சொல்லுங்கள்.",
             })
 
         if not time_slot:
             return self._make_response(language, "book", "collecting_info", slots, {
-                "en": f"Checking {specialization} availability on {date}...",
-                "hi": f"{date} को {specialization} की उपलब्धता देखता हूं...",
-                "ta": f"{date} அன்று {specialization} கிடைக்கும் நேரம் பார்க்கிறேன்...",
-            }, tool_calls=[{"tool": "check_availability", "parameters": {"specialization": specialization, "date": date}}])
+                "en": f"Checking {doc_display}'s availability on {date}...",
+                "hi": f"{date} को {doc_display} की उपलब्धता देखता हूं...",
+                "ta": f"{date} அன்று {doc_display} கிடைக்கும் நேரம் பார்க்கிறேன்...",
+            }, tool_calls=[{
+                "tool": "check_availability",
+                "parameters": {
+                    "doctor_id": doctor_id,
+                    "date": date
+                }
+            }])
+
+        available_slots = slots.get("available_slots", [])
+        if available_slots and time_slot not in available_slots:
+            closest = self._find_closest_slot(time_slot, available_slots)
+            slots_str = ", ".join(available_slots[:8])
+
+            if closest:
+                slots.pop("time_slot", None)
+                return self._make_response(language, "book", "collecting_info", slots, {
+                    "en": f"Sorry, {time_slot} is not available. The closest available slot is {closest}. Available times: {slots_str}. Which one would you prefer?",
+                    "hi": f"क्षमा करें, {time_slot} उपलब्ध नहीं है। निकटतम समय {closest} है। उपलब्ध समय: {slots_str}। कौन सा समय चुनेंगे?",
+                    "ta": f"மன்னிக்கவும், {time_slot} கிடைக்கவில்லை. அருகிலுள்ள நேரம் {closest}. நேரங்கள்: {slots_str}. எது வசதி?",
+                })
+            else:
+                slots.pop("time_slot", None)
+                return self._make_response(language, "book", "collecting_info", slots, {
+                    "en": f"Sorry, {time_slot} is not available on {date}. Available times are: {slots_str}. Please pick one.",
+                    "hi": f"क्षमा करें, {time_slot} {date} को उपलब्ध नहीं है। उपलब्ध समय: {slots_str}। कृपया एक चुनें।",
+                    "ta": f"மன்னிக்கவும், {time_slot} {date} அன்று கிடைக்கவில்லை. நேரங்கள்: {slots_str}. ஒன்றை தேர்வு செய்யுங்கள்.",
+                })
 
         return self._make_response(language, "book", "confirming", slots, {
-            "en": f"Ready to book: {specialization} on {date} at {time_slot}. Shall I confirm? (yes/no)",
-            "hi": f"बुक करें: {specialization}, {date} को {time_slot} बजे। पुष्टि करें? (हाँ/नहीं)",
-            "ta": f"பதிவு: {specialization}, {date} அன்று {time_slot}. உறுதி செய்யவா? (ஆம்/இல்லை)",
+            "en": f"Ready to book: {doc_display} on {date} at {time_slot}. Shall I confirm? (yes/no)",
+            "hi": f"बुक करें: {doc_display}, {date} को {time_slot} बजे। पुष्टि करें? (हाँ/नहीं)",
+            "ta": f"பதிவு: {doc_display}, {date} அன்று {time_slot}. உறுதி செய்யவா? (ஆம்/இல்லை)",
         })
 
     def _handle_confirmation_yes(self, language: str, slots: dict, current_intent: str) -> dict:
-        if current_intent == "book" and slots.get("specialization") and slots.get("date") and slots.get("time_slot"):
+        if current_intent == "book":
+            doctor_id = slots.get("doctor_id")
+            date = slots.get("date")
+            time_slot = slots.get("time_slot")
+            patient_id = slots.get("patient_id", "")
+
+            if not doctor_id:
+                logger.warning("booking_attempted_without_doctor_id", slots=slots)
+                return self._make_response(language, "book", "collecting_info", slots, {
+                    "en": "I need to find a doctor first. Let me search...",
+                    "hi": "पहले डॉक्टर खोजना होगा...",
+                    "ta": "முதலில் மருத்துவரை கண்டுபிடிக்க வேண்டும்...",
+                }, tool_calls=[{
+                    "tool": "search_doctors",
+                    "parameters": {"specialization": slots.get("specialization", "general physician")}
+                }])
+
+            if not date or not time_slot:
+                return self._make_response(language, "book", "collecting_info", slots, {
+                    "en": "I'm missing some details. Let me help you complete the booking.",
+                    "hi": "कुछ जानकारी कम है। बुकिंग पूरी करता हूं।",
+                    "ta": "சில விவரங்கள் இல்லை. பதிவை முடிக்க உதவுகிறேன்.",
+                })
+
+            doctor_name = slots.get("doctor_name", slots.get("specialization"))
+            doc_display = self._format_doctor_name(doctor_name, slots.get("specialization"))
             return self._make_response(language, "book", "executing", slots, {
-                "en": "Booking your appointment...",
-                "hi": "अपॉइंटमेंट बुक कर रहा हूं...",
-                "ta": "சந்திப்பை பதிவு செய்கிறேன்...",
-            }, tool_calls=[{"tool": "book_appointment", "parameters": {
-                "doctor_id": slots.get("doctor_id", ""),
-                "date": slots["date"],
-                "time_slot": slots["time_slot"],
-            }}])
+                "en": f"Booking your appointment with {doc_display}...",
+                "hi": f"{doc_display} के साथ अपॉइंटमेंट बुक कर रहा हूं...",
+                "ta": f"{doc_display} உடன் சந்திப்பை பதிவு செய்கிறேன்...",
+            }, tool_calls=[{
+                "tool": "book_appointment",
+                "parameters": {
+                    "doctor_id": doctor_id,
+                    "date": date,
+                    "time_slot": time_slot,
+                    "patient_id": patient_id,
+                }
+            }])
+
         return self._make_response(language, current_intent or "clarification", "collecting_info", slots, {
             "en": "I'm missing some details. Let me help you complete the booking.",
             "hi": "कुछ जानकारी कम है। बुकिंग पूरी करता हूं।",
@@ -255,6 +335,46 @@ Return JSON: {{"reasoning":"why","intent":"book|cancel|reschedule|check_availabi
             "hi": "कोई बात नहीं! क्या बदलना चाहेंगे? डॉक्टर, तारीख, या समय।",
             "ta": "பரவாயில்லை! என்ன மாற்ற வேண்டும்? மருத்துவர், தேதி, நேரம்.",
         })
+
+    def _format_doctor_name(self, doctor_name: str, fallback: str = "") -> str:
+        if not doctor_name:
+            return fallback or "the doctor"
+        name = doctor_name.strip()
+        clean_name = name
+        if clean_name.lower().startswith("dr."):
+            clean_name = clean_name[3:].strip()
+        elif clean_name.lower().startswith("dr "):
+            clean_name = clean_name[3:].strip()
+        return f"Dr. {clean_name}"
+
+    def _find_closest_slot(self, requested: str, available: list) -> str:
+        if not available:
+            return None
+        try:
+            req_minutes = self._time_to_minutes(requested)
+            if req_minutes is None:
+                return available[0]
+            best = None
+            best_diff = float("inf")
+            for slot in available:
+                slot_minutes = self._time_to_minutes(slot)
+                if slot_minutes is not None:
+                    diff = abs(slot_minutes - req_minutes)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best = slot
+            return best
+        except Exception:
+            return available[0] if available else None
+
+    def _time_to_minutes(self, time_str: str) -> int:
+        try:
+            parts = time_str.strip().split(":")
+            hours = int(parts[0])
+            minutes = int(parts[1]) if len(parts) > 1 else 0
+            return hours * 60 + minutes
+        except (ValueError, IndexError):
+            return None
 
     def _is_affirmative(self, text: str) -> bool:
         return any(p in text for p in [
@@ -279,7 +399,7 @@ Return JSON: {{"reasoning":"why","intent":"book|cancel|reschedule|check_availabi
             "book": ["book", "appointment", "schedule", "want to see", "need to see",
                      "need a doctor", "बुक", "अपॉइंटमेंट", "मिलना", "பதிவு", "சந்திப்பு", "பார்க்க"],
             "cancel": ["cancel my", "cancel the", "cancel appointment", "कैंसल", "ரத்து"],
-            "reschedule": ["reschedule", "change time", "change date", "move my", "रीशेड்यूल", "மாற்று"],
+            "reschedule": ["reschedule", "change time", "change date", "move my", "रीशेड்यூल", "மாற்று"],
             "list": ["list", "show my", "my appointment", "upcoming", "दिखाओ", "காட்டு"],
         }
         for intent, keywords in intent_keywords.items():
@@ -308,6 +428,10 @@ Return JSON: {{"reasoning":"why","intent":"book|cancel|reschedule|check_availabi
         elif "next week" in text_lower:
             slots["date"] = str(today + timedelta(days=7))
 
+        date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})', text_lower)
+        if date_match:
+            slots["date"] = date_match.group(0)
+
         time_patterns = [
             (r'(\d{1,2})\s*:\s*(\d{2})\s*(am|pm)', 3),
             (r'(\d{1,2})\s*(am|pm)', 2),
@@ -325,10 +449,14 @@ Return JSON: {{"reasoning":"why","intent":"book|cancel|reschedule|check_availabi
                     period = g[2].lower()
                     if period == "pm" and hour != 12:
                         hour += 12
+                    elif period == "am" and hour == 12:
+                        hour = 0
                 elif groups == 2:
                     period = g[1].lower()
                     if period == "pm" and hour != 12:
                         hour += 12
+                    elif period == "am" and hour == 12:
+                        hour = 0
                 else:
                     if 1 <= hour <= 7:
                         hour += 12

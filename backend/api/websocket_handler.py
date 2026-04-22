@@ -1,6 +1,7 @@
 import asyncio
 import time
 import uuid
+import traceback
 import orjson
 import structlog
 from fastapi import WebSocket, WebSocketDisconnect
@@ -71,11 +72,22 @@ async def handle_websocket(websocket: WebSocket, session_id: str = None):
 
     try:
         while True:
-            message = await websocket.receive()
+            try:
+                message = await websocket.receive()
+            except WebSocketDisconnect:
+                raise
+            except Exception as e:
+                logger.warning("ws_receive_error", error=str(e))
+                break
+
+            if message.get("type") == "websocket.disconnect":
+                break
+
             if "text" in message:
                 await handle_text_message(session_id, message["text"])
             elif "bytes" in message:
                 await handle_audio_message(session_id, message["bytes"])
+
     except WebSocketDisconnect:
         logger.info("ws_disconnected", session_id=session_id)
     except Exception as e:
@@ -103,13 +115,19 @@ async def handle_text_message(session_id: str, raw: str):
         await memory_manager.session.update_session(session_id, {
             "patient_id": patient_id,
             "language": language,
+            "collected_slots": {
+                "patient_id": patient_id,
+            },
         })
 
         if patient_id:
-            profile = await memory_manager.persistent.get_patient_profile(patient_id)
-            if profile.get("preferred_language"):
-                session_data["language"] = profile["preferred_language"]
-                connection_manager.session_data[session_id] = session_data
+            try:
+                profile = await memory_manager.persistent.get_patient_profile(patient_id)
+                if profile.get("preferred_language"):
+                    session_data["language"] = profile["preferred_language"]
+                    connection_manager.session_data[session_id] = session_data
+            except Exception as e:
+                logger.warning("profile_load_error", error=str(e))
 
         await connection_manager.send_json(session_id, {
             "type": "initialized",
@@ -146,42 +164,109 @@ async def handle_audio_message(session_id: str, audio_bytes: bytes):
 
 async def process_audio_buffer(session_id: str):
     session_data = connection_manager.session_data.get(session_id)
-    if not session_data or not session_data["audio_buffer"]:
+    if not session_data:
+        return
+
+    if not session_data["audio_buffer"]:
+        logger.warning("empty_audio_buffer", session_id=session_id)
+        session_data["processing"] = False
+        connection_manager.session_data[session_id] = session_data
+        await connection_manager.send_json(session_id, {
+            "type": "error",
+            "message": "No audio captured. Please try again."
+        })
         return
 
     latency = latency_tracker.create(session_id)
     latency.speech_end_timestamp = time.perf_counter() * 1000
 
-    audio_data = b"".join(session_data["audio_buffer"])
+    audio_chunks = list(session_data["audio_buffer"])
     session_data["audio_buffer"] = []
     session_data["processing"] = True
     connection_manager.session_data[session_id] = session_data
 
-    wav_data = audio_processor.finalize_wav(
-        audio_processor.create_wav_header(),
-        audio_data,
+    audio_data = b"".join(audio_chunks)
+
+    logger.info(
+        "audio_buffer_stats",
+        session_id=session_id,
+        chunks=len(audio_chunks),
+        total_bytes=len(audio_data),
+        duration_estimate=f"{len(audio_data) / (16000 * 2):.2f}s",
     )
+
+    if len(audio_data) < 3200:
+        logger.warning("audio_too_short", bytes=len(audio_data))
+        session_data["processing"] = False
+        connection_manager.session_data[session_id] = session_data
+        await connection_manager.send_json(session_id, {
+            "type": "error",
+            "message": "Audio too short. Please speak longer."
+        })
+        return
+
+    try:
+        wav_data = audio_processor.finalize_wav(
+            audio_processor.create_wav_header(),
+            audio_data,
+        )
+        logger.info("wav_created", wav_size=len(wav_data))
+    except Exception as e:
+        logger.error("wav_creation_error", error=str(e), traceback=traceback.format_exc())
+        session_data["processing"] = False
+        connection_manager.session_data[session_id] = session_data
+        await connection_manager.send_json(session_id, {
+            "type": "error",
+            "message": "Audio processing failed."
+        })
+        return
 
     latency.mark("stt", "start")
 
     try:
         stt_result = await asyncio.wait_for(
-            stt_service.transcribe_audio(wav_data, language=session_data.get("language", "en")),
-            timeout=3.0,
+            stt_service.transcribe_audio(
+                wav_data,
+                language=session_data.get("language", "en")
+            ),
+            timeout=5.0,
         )
-    except Exception as e:
-        logger.error("stt_error", error=str(e))
+        logger.info("stt_result", result=stt_result)
+    except asyncio.TimeoutError:
+        logger.error("stt_timeout")
         session_data["processing"] = False
         connection_manager.session_data[session_id] = session_data
-        await connection_manager.send_json(session_id, {"type": "error", "message": "Speech recognition failed"})
+        await connection_manager.send_json(session_id, {
+            "type": "error",
+            "message": "Speech recognition timed out. Please try again."
+        })
+        return
+    except Exception as e:
+        logger.error(
+            "stt_error_detailed",
+            error=str(e),
+            error_type=type(e).__name__,
+            traceback=traceback.format_exc(),
+        )
+        session_data["processing"] = False
+        connection_manager.session_data[session_id] = session_data
+        await connection_manager.send_json(session_id, {
+            "type": "error",
+            "message": f"Speech recognition failed: {type(e).__name__}: {str(e) or 'unknown error'}"
+        })
         return
 
     latency.mark("stt", "end")
 
     user_text = stt_result.get("text", "").strip()
     if not user_text:
+        logger.warning("stt_empty_text", session_id=session_id)
         session_data["processing"] = False
         connection_manager.session_data[session_id] = session_data
+        await connection_manager.send_json(session_id, {
+            "type": "error",
+            "message": "Could not understand audio. Please speak clearly."
+        })
         return
 
     await connection_manager.send_json(session_id, {
@@ -215,7 +300,7 @@ async def process_user_input(session_id: str, user_text: str, latency: LatencyBr
             latency=latency,
         )
     except Exception as e:
-        logger.error("agent_error", error=str(e))
+        logger.error("agent_error", error=str(e), traceback=traceback.format_exc())
         result = {
             "response_text": "I'm sorry, something went wrong. Could you try again?",
             "intent": "error",
@@ -256,7 +341,7 @@ async def process_user_input(session_id: str, user_text: str, latency: LatencyBr
 
             latency.mark("tts", "end")
         except Exception as e:
-            logger.error("tts_error", error=str(e))
+            logger.error("tts_error", error=str(e), traceback=traceback.format_exc())
             if not first_chunk_sent:
                 latency.first_audio_response = time.perf_counter() * 1000
 

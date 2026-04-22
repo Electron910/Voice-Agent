@@ -1,6 +1,6 @@
 import structlog
 from datetime import datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models import Appointment, Doctor, DoctorSchedule, Patient, AppointmentStatus
@@ -31,6 +31,39 @@ class ToolRegistry:
 
 
 tool_registry = ToolRegistry()
+
+
+async def _ensure_patient_exists(patient_id: str, session: AsyncSession) -> bool:
+    try:
+        pid = UUID(patient_id)
+    except ValueError:
+        return False
+
+    result = await session.execute(
+        select(Patient).where(Patient.id == pid)
+    )
+    patient = result.scalar_one_or_none()
+
+    if patient:
+        return True
+
+    new_patient = Patient(
+        id=pid,
+        name="Patient",
+        phone="+0000000000",
+        preferred_language="en",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow(),
+    )
+    session.add(new_patient)
+
+    try:
+        await session.flush()
+        logger.info("auto_created_patient", patient_id=patient_id)
+        return True
+    except Exception as e:
+        logger.error("patient_creation_failed", error=str(e))
+        return False
 
 
 async def check_availability(doctor_id: str = None, specialization: str = None, date: str = None) -> dict:
@@ -98,6 +131,14 @@ async def book_appointment(patient_id: str, doctor_id: str, date: str, time_slot
             if slot_time < now:
                 return {"success": False, "error": "Cannot book appointments in the past"}
 
+            patient_ok = await _ensure_patient_exists(patient_id, session)
+            if not patient_ok:
+                return {"success": False, "error": "Invalid patient ID"}
+
+            doctor = await session.get(Doctor, UUID(doctor_id))
+            if not doctor:
+                return {"success": False, "error": "Doctor not found"}
+
             conflict_query = select(Appointment).where(
                 and_(
                     Appointment.doctor_id == UUID(doctor_id),
@@ -150,8 +191,6 @@ async def book_appointment(patient_id: str, doctor_id: str, date: str, time_slot
             await session.commit()
             await session.refresh(appointment)
 
-            doctor = await session.get(Doctor, UUID(doctor_id))
-
             schedule_query = select(DoctorSchedule).where(
                 and_(
                     DoctorSchedule.doctor_id == UUID(doctor_id),
@@ -166,10 +205,20 @@ async def book_appointment(patient_id: str, doctor_id: str, date: str, time_slot
                 schedule.booked_slots = booked
                 await session.commit()
 
+            logger.info(
+                "appointment_booked_successfully",
+                appointment_id=str(appointment.id),
+                patient_id=patient_id,
+                doctor_id=doctor_id,
+                doctor_name=doctor.name,
+                date=date,
+                time_slot=time_slot,
+            )
+
             return {
                 "success": True,
                 "appointment_id": str(appointment.id),
-                "doctor_name": doctor.name if doctor else "Unknown",
+                "doctor_name": doctor.name,
                 "date": date,
                 "time_slot": time_slot,
                 "status": "scheduled",
@@ -207,6 +256,12 @@ async def cancel_appointment(appointment_id: str) -> dict:
                 schedule.booked_slots = booked
 
             await session.commit()
+
+            logger.info(
+                "appointment_cancelled",
+                appointment_id=appointment_id,
+            )
+
             return {
                 "success": True,
                 "appointment_id": appointment_id,
@@ -254,6 +309,10 @@ async def reschedule_appointment(appointment_id: str, new_date: str, new_time_sl
 async def list_appointments(patient_id: str) -> dict:
     async with async_session_factory() as session:
         try:
+            patient_ok = await _ensure_patient_exists(patient_id, session)
+            if not patient_ok:
+                return {"success": False, "error": "Invalid patient ID"}
+
             query = (
                 select(Appointment)
                 .where(
@@ -294,6 +353,13 @@ async def search_doctors(specialization: str) -> dict:
             )
             result = await session.execute(query)
             doctors = result.scalars().all()
+
+            if not doctors:
+                return {
+                    "success": False,
+                    "error": f"No doctors found for specialization: {specialization}",
+                    "doctors": [],
+                }
 
             return {
                 "success": True,

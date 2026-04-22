@@ -194,6 +194,7 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
         var playbackContext = null;
         var audioQueue = [];
         var isPlaying = false;
+        var currentSource = null;
 
         function getPlaybackContext() {
             if (!playbackContext || playbackContext.state === 'closed') {
@@ -211,7 +212,11 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
         }
 
         function playNextChunk() {
-            if (audioQueue.length === 0) { isPlaying = false; return; }
+            if (audioQueue.length === 0) {
+                isPlaying = false;
+                currentSource = null;
+                return;
+            }
             isPlaying = true;
             var ctx = getPlaybackContext();
             var chunk = audioQueue.shift();
@@ -221,6 +226,7 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
                     source.buffer = audioBuffer;
                     source.connect(ctx.destination);
                     source.onended = playNextChunk;
+                    currentSource = source;
                     source.start();
                     addLog('Playing audio (' + audioBuffer.duration.toFixed(2) + 's)');
                 },
@@ -243,6 +249,7 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
             source.buffer = audioBuffer;
             source.connect(ctx.destination);
             source.onended = playNextChunk;
+            currentSource = source;
             source.start();
             addLog('Playing raw PCM (' + audioBuffer.duration.toFixed(2) + 's)');
         }
@@ -250,6 +257,10 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
         function stopPlayback() {
             audioQueue = [];
             isPlaying = false;
+            if (currentSource) {
+                try { currentSource.stop(); } catch(e) {}
+                currentSource = null;
+            }
         }
 
         function addLog(msg) {
@@ -405,7 +416,10 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
                     if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm.buffer);
                 };
                 source.connect(processor);
-                processor.connect(audioContext.destination);
+                var silentGain = audioContext.createGain();
+                silentGain.gain.value = 0;
+                processor.connect(silentGain);
+                silentGain.connect(audioContext.destination);
                 audioCapture = { stream: stream, processor: processor, source: source };
             }).catch(function(e) { addLog('Mic error: ' + e.message); isRecording = false; });
         });
@@ -430,6 +444,7 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
     </script>
 </body>
 </html>"""
+
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
