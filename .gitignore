@@ -1,0 +1,130 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+*.whl
+pip-wheel-metadata/
+*.manifest
+*.spec
+
+# Virtual Environment
+venv/
+env/
+.venv/
+.env/
+ENV/
+
+# Environment Variables
+.env
+.env.local
+.env.production
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Node.js
+node_modules/
+frontend/node_modules/
+frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+package-lock.json
+
+# Docker
+docker-compose.override.yml
+
+# Database
+*.db
+*.sqlite3
+*.sql
+
+# Redis
+dump.rdb
+
+# Logs
+logs/
+*.log
+log/
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Distribution
+*.tar.gz
+*.zip
+
+# Byte-compiled
+*.pyc
+*.pyo
+*.pyd
+
+# Alembic
+alembic/versions/__pycache__/
+migrations/versions/__pycache__/
+
+# Audio files (test recordings)
+*.wav
+*.mp3
+*.ogg
+*.flac
+*.pcm
+
+# Jupyter
+.ipynb_checkpoints/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Ruff
+.ruff_cache/
+
+# Documentation build
+docs/_build/
+site/
+
+# Terraform (if cloud deploy)
+*.tfstate
+*.tfstate.*
+.terraform/

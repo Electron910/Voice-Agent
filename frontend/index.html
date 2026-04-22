@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoiceAI Clinical Agent</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f1117;
+            color: #e1e4e8;
+            min-height: 100vh;
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        h1 { color: #58a6ff; margin-bottom: 20px; font-size: 24px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .panel {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .panel h2 { color: #58a6ff; font-size: 14px; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+        .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+        button {
+            padding: 8px 16px;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            background: #21262d;
+            color: #e1e4e8;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        button:hover { background: #30363d; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        button.primary { background: #238636; border-color: #2ea043; }
+        button.danger { background: #da3633; border-color: #f85149; }
+        button.warning { background: #9e6a03; border-color: #d29922; }
+        input, select {
+            padding: 8px 12px;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            background: #0d1117;
+            color: #e1e4e8;
+            font-size: 14px;
+        }
+        input:focus, select:focus { border-color: #58a6ff; outline: none; }
+        #status { font-weight: bold; font-size: 14px; }
+        .transcript-area {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            background: #0d1117;
+        }
+        .transcript-entry { margin-bottom: 8px; padding: 8px; border-radius: 4px; font-size: 14px; line-height: 1.5; }
+        .transcript-entry.user { background: #1c2333; border-left: 3px solid #58a6ff; }
+        .transcript-entry.agent { background: #1c3321; border-left: 3px solid #3fb950; }
+        .label { font-weight: bold; color: #8b949e; }
+        pre {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            font-size: 12px;
+            overflow: auto;
+            max-height: 200px;
+            white-space: pre-wrap;
+            line-height: 1.5;
+        }
+        .log-area {
+            height: 150px;
+            overflow-y: auto;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 8px;
+            background: #0d1117;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry { color: #8b949e; margin-bottom: 2px; }
+        .text-input-group { display: flex; gap: 8px; margin-top: 12px; }
+        .text-input-group input { flex: 1; }
+        .full-width { grid-column: 1 / -1; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏥 VoiceAI Clinical Appointment Agent</h1>
+
+        <div class="controls">
+            <input id="patientId" placeholder="Patient ID (from /api/seed)" style="width: 280px">
+            <select id="language">
+                <option value="en">English</option>
+                <option value="hi">Hindi</option>
+                <option value="ta">Tamil</option>
+            </select>
+            <button id="initBtn" class="primary">Initialize Session</button>
+            <span id="status">Disconnected</span>
+        </div>
+
+        <div class="controls">
+            <button id="recordBtn" class="primary">🎤 Start Recording</button>
+            <button id="stopBtn" class="danger" disabled>⏹ Stop Recording</button>
+            <button id="interruptBtn" class="warning">✋ Interrupt</button>
+        </div>
+
+        <div class="grid">
+            <div class="panel">
+                <h2>Conversation</h2>
+                <div id="transcript" class="transcript-area"></div>
+                <div class="text-input-group">
+                    <input id="textInput" placeholder="Type a message (or use voice)...">
+                    <button id="sendBtn">Send</button>
+                </div>
+            </div>
+
+            <div class="panel">
+                <h2>Agent Reasoning</h2>
+                <pre id="reasoning">Waiting for interaction...</pre>
+                <h2 style="margin-top: 16px">Current Response</h2>
+                <pre id="response">-</pre>
+            </div>
+
+            <div class="panel">
+                <h2>Latency Breakdown</h2>
+                <pre id="latency">No data yet</pre>
+            </div>
+
+            <div class="panel">
+                <h2>System Log</h2>
+                <div id="log" class="log-area"></div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="/src/index.ts"></script>
+</body>
+</html>
