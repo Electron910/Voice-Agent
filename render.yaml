@@ -2,8 +2,10 @@ services:
   - type: web
     name: voiceai-backend
     runtime: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT --workers 2
+    healthCheckPath: /api/health
     envVars:
       - key: GEMINI_API_KEY
         sync: false
@@ -18,12 +20,26 @@ services:
           name: voiceai-redis
           type: redis
           property: connectionString
+      - key: CELERY_BROKER_URL
+        fromService:
+          name: voiceai-redis
+          type: redis
+          property: connectionString
+      - key: CELERY_RESULT_BACKEND
+        fromService:
+          name: voiceai-redis
+          type: redis
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: 3.12.0
 
   - type: redis
     name: voiceai-redis
     plan: free
     maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
 
 databases:
   - name: voiceai-db
     plan: free
+    ipAllowList: []
