@@ -50,7 +50,7 @@ app.add_middleware(
 app.include_router(rest_router)
 app.include_router(campaign_router)
 
-FRONTEND_HTML = """<!DOCTYPE html>
+FRONTEND_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -141,7 +141,7 @@ FRONTEND_HTML = """<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <h1>🏥 VoiceAI Clinical Appointment Agent</h1>
+        <h1>&#x1F3E5; VoiceAI Clinical Appointment Agent</h1>
         <div class="controls">
             <input id="patientId" placeholder="Patient ID (run /api/seed first)" style="width: 320px">
             <select id="language">
@@ -153,9 +153,9 @@ FRONTEND_HTML = """<!DOCTYPE html>
             <span id="status">Disconnected</span>
         </div>
         <div class="controls">
-            <button id="recordBtn" class="primary">🎤 Start Recording</button>
-            <button id="stopBtn" class="danger" disabled>⏹ Stop</button>
-            <button id="interruptBtn" class="warning">✋ Interrupt</button>
+            <button id="recordBtn" class="primary">&#x1F3A4; Start Recording</button>
+            <button id="stopBtn" class="danger" disabled>&#x23F9; Stop</button>
+            <button id="interruptBtn" class="warning">&#x270B; Interrupt</button>
         </div>
         <div class="grid">
             <div class="panel">
@@ -183,17 +183,78 @@ FRONTEND_HTML = """<!DOCTYPE html>
         </div>
     </div>
     <script>
-        const WS_PROTOCOL = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const WS_URL = WS_PROTOCOL + '//' + location.host;
-        const SESSION_ID = crypto.randomUUID();
-        let ws = null;
-        let audioCapture = null;
-        let audioContext = null;
-        let isRecording = false;
+        var WS_PROTOCOL = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        var WS_URL = WS_PROTOCOL + '//' + location.host;
+        var SESSION_ID = crypto.randomUUID();
+        var ws = null;
+        var audioCapture = null;
+        var audioContext = null;
+        var isRecording = false;
+
+        var playbackContext = null;
+        var audioQueue = [];
+        var isPlaying = false;
+
+        function getPlaybackContext() {
+            if (!playbackContext || playbackContext.state === 'closed') {
+                playbackContext = new AudioContext({ sampleRate: 16000 });
+            }
+            if (playbackContext.state === 'suspended') {
+                playbackContext.resume();
+            }
+            return playbackContext;
+        }
+
+        function enqueueAudio(arrayBuffer) {
+            audioQueue.push(arrayBuffer);
+            if (!isPlaying) { playNextChunk(); }
+        }
+
+        function playNextChunk() {
+            if (audioQueue.length === 0) { isPlaying = false; return; }
+            isPlaying = true;
+            var ctx = getPlaybackContext();
+            var chunk = audioQueue.shift();
+            ctx.decodeAudioData(chunk.slice(0),
+                function(audioBuffer) {
+                    var source = ctx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(ctx.destination);
+                    source.onended = playNextChunk;
+                    source.start();
+                    addLog('Playing audio (' + audioBuffer.duration.toFixed(2) + 's)');
+                },
+                function(err) {
+                    addLog('Decode failed, trying raw PCM');
+                    playRawPCM(ctx, chunk);
+                }
+            );
+        }
+
+        function playRawPCM(ctx, arrayBuffer) {
+            var int16 = new Int16Array(arrayBuffer);
+            var float32 = new Float32Array(int16.length);
+            for (var i = 0; i < int16.length; i++) {
+                float32[i] = int16[i] / 32768.0;
+            }
+            var audioBuffer = ctx.createBuffer(1, float32.length, 16000);
+            audioBuffer.getChannelData(0).set(float32);
+            var source = ctx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(ctx.destination);
+            source.onended = playNextChunk;
+            source.start();
+            addLog('Playing raw PCM (' + audioBuffer.duration.toFixed(2) + 's)');
+        }
+
+        function stopPlayback() {
+            audioQueue = [];
+            isPlaying = false;
+        }
 
         function addLog(msg) {
-            const el = document.getElementById('log');
-            const d = document.createElement('div');
+            var el = document.getElementById('log');
+            var d = document.createElement('div');
             d.className = 'log-entry';
             d.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
             el.appendChild(d);
@@ -201,10 +262,10 @@ FRONTEND_HTML = """<!DOCTYPE html>
         }
 
         function addTranscript(text, lang, type) {
-            const el = document.getElementById('transcript');
-            const d = document.createElement('div');
+            var el = document.getElementById('transcript');
+            var d = document.createElement('div');
             d.className = 'transcript-entry ' + type;
-            const label = type === 'user' ? 'You (' + lang + ')' : 'Agent (' + lang + ')';
+            var label = type === 'user' ? 'You (' + lang + ')' : 'Agent (' + lang + ')';
             d.innerHTML = '<span class="label">' + label + ':</span> ' + text;
             el.appendChild(d);
             el.scrollTop = el.scrollHeight;
@@ -213,25 +274,35 @@ FRONTEND_HTML = """<!DOCTYPE html>
         function connectWS() {
             ws = new WebSocket(WS_URL + '/ws/' + SESSION_ID);
             ws.binaryType = 'arraybuffer';
-            ws.onopen = () => {
+
+            ws.onopen = function() {
                 document.getElementById('status').textContent = 'Connected';
                 document.getElementById('status').style.color = '#4CAF50';
                 addLog('WebSocket connected');
+                getPlaybackContext();
             };
-            ws.onmessage = (event) => {
-                if (event.data instanceof ArrayBuffer) return;
+
+            ws.onmessage = function(event) {
+                if (event.data instanceof ArrayBuffer) {
+                    addLog('Received audio: ' + event.data.byteLength + ' bytes');
+                    enqueueAudio(event.data);
+                    return;
+                }
                 try {
-                    const data = JSON.parse(event.data);
+                    var data = JSON.parse(event.data);
+
                     if (data.type === 'connected') addLog('Session: ' + data.session_id);
                     if (data.type === 'initialized') addLog('Language: ' + data.language);
+
                     if (data.type === 'transcript') {
                         addTranscript(data.text, data.language, 'user');
                         addLog('Heard: "' + data.text + '"');
                     }
+
                     if (data.type === 'response') {
                         addTranscript(data.text, data.language, 'agent');
                         document.getElementById('response').textContent = data.text;
-                        const r = [];
+                        var r = [];
                         r.push('Intent: ' + data.intent);
                         r.push('Reasoning: ' + (data.reasoning || ''));
                         r.push('State: ' + (data.conversation_state || ''));
@@ -239,24 +310,37 @@ FRONTEND_HTML = """<!DOCTYPE html>
                             r.push('Tools: ' + JSON.stringify(data.tool_calls, null, 2));
                         if (data.tool_results && data.tool_results.length > 0)
                             r.push('Results: ' + JSON.stringify(data.tool_results, null, 2));
-                        document.getElementById('reasoning').textContent = r.join('\\n\\n');
+                        document.getElementById('reasoning').textContent = r.join('\n\n');
                     }
+
+                    if (data.type === 'audio' && data.data) {
+                        var binary = atob(data.data);
+                        var bytes = new Uint8Array(binary.length);
+                        for (var i = 0; i < binary.length; i++) {
+                            bytes[i] = binary.charCodeAt(i);
+                        }
+                        addLog('Received b64 audio: ' + bytes.byteLength + ' bytes');
+                        enqueueAudio(bytes.buffer);
+                    }
+
                     if (data.type === 'latency') {
-                        const d = data.data || data;
-                        const lines = [
-                            'Total: ' + d.total_ms + 'ms ' + (d.under_target ? '✅' : '❌'),
-                            'STT: ' + d.stt_ms + 'ms',
-                            'Agent: ' + d.agent_ms + 'ms',
-                            'Tools: ' + d.tool_ms + 'ms',
-                            'TTS: ' + d.tts_first_byte_ms + 'ms'
+                        var ld = data.data || data;
+                        var lines = [
+                            'Total: ' + ld.total_ms + 'ms ' + (ld.under_target ? ' OK' : ' SLOW'),
+                            'STT: ' + ld.stt_ms + 'ms',
+                            'Agent: ' + ld.agent_ms + 'ms',
+                            'Tools: ' + ld.tool_ms + 'ms',
+                            'TTS: ' + ld.tts_first_byte_ms + 'ms'
                         ];
-                        document.getElementById('latency').textContent = lines.join('\\n');
-                        document.getElementById('latency').style.color = d.under_target ? '#4CAF50' : '#f44336';
+                        document.getElementById('latency').textContent = lines.join('\n');
+                        document.getElementById('latency').style.color = ld.under_target ? '#4CAF50' : '#f44336';
                     }
+
                     if (data.type === 'error') addLog('Error: ' + data.message);
                 } catch(e) { console.error(e); }
             };
-            ws.onclose = () => {
+
+            ws.onclose = function() {
                 document.getElementById('status').textContent = 'Disconnected';
                 document.getElementById('status').style.color = '#f44336';
                 addLog('Disconnected. Reconnecting...');
@@ -264,18 +348,19 @@ FRONTEND_HTML = """<!DOCTYPE html>
             };
         }
 
-        document.getElementById('initBtn').addEventListener('click', () => {
-            const pid = document.getElementById('patientId').value;
-            const lang = document.getElementById('language').value;
+        document.getElementById('initBtn').addEventListener('click', function() {
+            getPlaybackContext();
+            var pid = document.getElementById('patientId').value;
+            var lang = document.getElementById('language').value;
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({type:'init', patient_id: pid || SESSION_ID, language: lang}));
-                addLog('Initialized: patient=' + (pid||SESSION_ID) + ', lang=' + lang);
+                addLog('Initialized: patient=' + (pid || SESSION_ID) + ', lang=' + lang);
             }
         });
 
-        document.getElementById('sendBtn').addEventListener('click', () => {
-            const input = document.getElementById('textInput');
-            const text = input.value.trim();
+        document.getElementById('sendBtn').addEventListener('click', function() {
+            var input = document.getElementById('textInput');
+            var text = input.value.trim();
             if (text && ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({type:'text', content: text}));
                 addTranscript(text, 'typed', 'user');
@@ -283,48 +368,49 @@ FRONTEND_HTML = """<!DOCTYPE html>
             }
         });
 
-        document.getElementById('textInput').addEventListener('keypress', (e) => {
+        document.getElementById('textInput').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') document.getElementById('sendBtn').click();
         });
 
-        document.getElementById('interruptBtn').addEventListener('click', () => {
+        document.getElementById('interruptBtn').addEventListener('click', function() {
+            stopPlayback();
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({type:'interrupt'}));
                 addLog('Interrupted');
             }
         });
 
-        document.getElementById('recordBtn').addEventListener('click', async () => {
+        document.getElementById('recordBtn').addEventListener('click', function() {
             if (isRecording) return;
+            stopPlayback();
             isRecording = true;
             document.getElementById('recordBtn').disabled = true;
             document.getElementById('stopBtn').disabled = false;
             document.getElementById('status').textContent = 'Recording...';
             document.getElementById('status').style.color = '#f44336';
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
-                });
+            navigator.mediaDevices.getUserMedia({
+                audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+            }).then(function(stream) {
                 audioContext = new AudioContext({ sampleRate: 16000 });
-                const source = audioContext.createMediaStreamSource(stream);
-                const processor = audioContext.createScriptProcessor(4096, 1, 1);
-                processor.onaudioprocess = (e) => {
+                var source = audioContext.createMediaStreamSource(stream);
+                var processor = audioContext.createScriptProcessor(4096, 1, 1);
+                processor.onaudioprocess = function(e) {
                     if (!isRecording) return;
-                    const input = e.inputBuffer.getChannelData(0);
-                    const pcm = new Int16Array(input.length);
-                    for (let i = 0; i < input.length; i++) {
-                        const s = Math.max(-1, Math.min(1, input[i]));
+                    var inp = e.inputBuffer.getChannelData(0);
+                    var pcm = new Int16Array(inp.length);
+                    for (var i = 0; i < inp.length; i++) {
+                        var s = Math.max(-1, Math.min(1, inp[i]));
                         pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
                     }
                     if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm.buffer);
                 };
                 source.connect(processor);
                 processor.connect(audioContext.destination);
-                audioCapture = { stream, processor, source };
-            } catch(e) { addLog('Mic error: ' + e.message); isRecording = false; }
+                audioCapture = { stream: stream, processor: processor, source: source };
+            }).catch(function(e) { addLog('Mic error: ' + e.message); isRecording = false; });
         });
 
-        document.getElementById('stopBtn').addEventListener('click', () => {
+        document.getElementById('stopBtn').addEventListener('click', function() {
             isRecording = false;
             document.getElementById('recordBtn').disabled = false;
             document.getElementById('stopBtn').disabled = true;
@@ -333,7 +419,7 @@ FRONTEND_HTML = """<!DOCTYPE html>
             if (audioCapture) {
                 audioCapture.processor.disconnect();
                 audioCapture.source.disconnect();
-                audioCapture.stream.getTracks().forEach(t => t.stop());
+                audioCapture.stream.getTracks().forEach(function(t) { t.stop(); });
                 audioCapture = null;
             }
             if (audioContext) { audioContext.close(); audioContext = null; }
@@ -344,7 +430,6 @@ FRONTEND_HTML = """<!DOCTYPE html>
     </script>
 </body>
 </html>"""
-
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
