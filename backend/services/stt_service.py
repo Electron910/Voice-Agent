@@ -1,6 +1,5 @@
 import asyncio
 import structlog
-from deepgram import DeepgramClient, PrerecordedOptions, LiveTranscriptionEvents, LiveOptions
 from backend.config import get_settings
 
 logger = structlog.get_logger()
@@ -9,9 +8,20 @@ settings = get_settings()
 
 class STTService:
     def __init__(self):
-        self._client = DeepgramClient(settings.deepgram_api_key)
+        self._available = bool(settings.deepgram_api_key)
+        self._client = None
+        if self._available:
+            from deepgram import DeepgramClient
+            self._client = DeepgramClient(settings.deepgram_api_key)
+        else:
+            logger.warning("stt_unavailable_no_api_key")
 
     async def transcribe_audio(self, audio_bytes: bytes, language: str = "en") -> dict:
+        if not self._available:
+            return {"text": "", "confidence": 0.0, "detected_language": language}
+
+        from deepgram import PrerecordedOptions
+
         lang_map = {
             "en": "en-IN",
             "hi": "hi",
@@ -49,25 +59,6 @@ class STTService:
             "confidence": best.get("confidence", 0.0),
             "detected_language": detected_lang,
         }
-
-    def create_live_connection(self, language: str = "en"):
-        lang_map = {
-            "en": "en-IN",
-            "hi": "hi",
-            "ta": "ta",
-        }
-
-        options = LiveOptions(
-            model="nova-2",
-            language=lang_map.get(language, "en-IN"),
-            smart_format=True,
-            interim_results=True,
-            utterance_end_ms=1000,
-            vad_events=True,
-            endpointing=300,
-        )
-
-        return self._client.listen.live.v("1").open(options)
 
 
 stt_service = STTService()

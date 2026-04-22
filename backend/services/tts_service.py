@@ -11,12 +11,19 @@ class TTSService:
     def __init__(self):
         self._base_url = "https://api.deepgram.com/v1/speak"
         self._api_key = settings.deepgram_api_key
-        self._client = httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=2.0, read=5.0, write=2.0, pool=2.0),
-            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
-        )
+        self._available = bool(self._api_key)
+        if self._available:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=2.0, read=5.0, write=2.0, pool=2.0),
+                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            )
+        else:
+            self._client = None
+            logger.warning("tts_unavailable_no_api_key")
 
     async def synthesize(self, text: str, language: str = "en") -> bytes:
+        if not self._available:
+            return b""
         model = "aura-asteria-en"
         headers = {
             "Authorization": f"Token {self._api_key}",
@@ -37,6 +44,10 @@ class TTSService:
         return response.content
 
     async def synthesize_streaming(self, text: str, language: str = "en"):
+        if not self._available:
+            yield b"", True
+            return
+
         if len(text) > 200:
             sentences = self._split_sentences(text)
             for sentence in sentences:
