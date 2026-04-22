@@ -2,6 +2,7 @@ import structlog
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from backend.database import init_db
 from backend.memory.memory_manager import memory_manager
 from backend.api.websocket_handler import handle_websocket
@@ -48,6 +49,306 @@ app.add_middleware(
 
 app.include_router(rest_router)
 app.include_router(campaign_router)
+
+FRONTEND_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoiceAI Clinical Agent</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0f1117;
+            color: #e1e4e8;
+            min-height: 100vh;
+        }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        h1 { color: #58a6ff; margin-bottom: 20px; font-size: 24px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+        .panel {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .panel h2 { color: #58a6ff; font-size: 14px; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 1px; }
+        .controls { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; align-items: center; }
+        button {
+            padding: 8px 16px;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            background: #21262d;
+            color: #e1e4e8;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+        button:hover { background: #30363d; }
+        button:disabled { opacity: 0.4; cursor: not-allowed; }
+        button.primary { background: #238636; border-color: #2ea043; }
+        button.danger { background: #da3633; border-color: #f85149; }
+        button.warning { background: #9e6a03; border-color: #d29922; }
+        input, select {
+            padding: 8px 12px;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            background: #0d1117;
+            color: #e1e4e8;
+            font-size: 14px;
+        }
+        input:focus, select:focus { border-color: #58a6ff; outline: none; }
+        #status { font-weight: bold; font-size: 14px; }
+        .transcript-area {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            background: #0d1117;
+        }
+        .transcript-entry { margin-bottom: 8px; padding: 8px; border-radius: 4px; font-size: 14px; line-height: 1.5; }
+        .transcript-entry.user { background: #1c2333; border-left: 3px solid #58a6ff; }
+        .transcript-entry.agent { background: #1c3321; border-left: 3px solid #3fb950; }
+        .label { font-weight: bold; color: #8b949e; }
+        pre {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            font-size: 12px;
+            overflow: auto;
+            max-height: 200px;
+            white-space: pre-wrap;
+            line-height: 1.5;
+        }
+        .log-area {
+            height: 150px;
+            overflow-y: auto;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 8px;
+            background: #0d1117;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .log-entry { color: #8b949e; margin-bottom: 2px; }
+        .text-input-group { display: flex; gap: 8px; margin-top: 12px; }
+        .text-input-group input { flex: 1; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏥 VoiceAI Clinical Appointment Agent</h1>
+        <div class="controls">
+            <input id="patientId" placeholder="Patient ID (run /api/seed first)" style="width: 320px">
+            <select id="language">
+                <option value="en">English</option>
+                <option value="hi">Hindi</option>
+                <option value="ta">Tamil</option>
+            </select>
+            <button id="initBtn" class="primary">Initialize Session</button>
+            <span id="status">Disconnected</span>
+        </div>
+        <div class="controls">
+            <button id="recordBtn" class="primary">🎤 Start Recording</button>
+            <button id="stopBtn" class="danger" disabled>⏹ Stop</button>
+            <button id="interruptBtn" class="warning">✋ Interrupt</button>
+        </div>
+        <div class="grid">
+            <div class="panel">
+                <h2>Conversation</h2>
+                <div id="transcript" class="transcript-area"></div>
+                <div class="text-input-group">
+                    <input id="textInput" placeholder="Type a message...">
+                    <button id="sendBtn">Send</button>
+                </div>
+            </div>
+            <div class="panel">
+                <h2>Agent Reasoning</h2>
+                <pre id="reasoning">Waiting for interaction...</pre>
+                <h2 style="margin-top:16px">Current Response</h2>
+                <pre id="response">-</pre>
+            </div>
+            <div class="panel">
+                <h2>Latency Breakdown</h2>
+                <pre id="latency">No data yet</pre>
+            </div>
+            <div class="panel">
+                <h2>System Log</h2>
+                <div id="log" class="log-area"></div>
+            </div>
+        </div>
+    </div>
+    <script>
+        const WS_PROTOCOL = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const WS_URL = WS_PROTOCOL + '//' + location.host;
+        const SESSION_ID = crypto.randomUUID();
+        let ws = null;
+        let audioCapture = null;
+        let audioContext = null;
+        let isRecording = false;
+
+        function addLog(msg) {
+            const el = document.getElementById('log');
+            const d = document.createElement('div');
+            d.className = 'log-entry';
+            d.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+            el.appendChild(d);
+            el.scrollTop = el.scrollHeight;
+        }
+
+        function addTranscript(text, lang, type) {
+            const el = document.getElementById('transcript');
+            const d = document.createElement('div');
+            d.className = 'transcript-entry ' + type;
+            const label = type === 'user' ? 'You (' + lang + ')' : 'Agent (' + lang + ')';
+            d.innerHTML = '<span class="label">' + label + ':</span> ' + text;
+            el.appendChild(d);
+            el.scrollTop = el.scrollHeight;
+        }
+
+        function connectWS() {
+            ws = new WebSocket(WS_URL + '/ws/' + SESSION_ID);
+            ws.binaryType = 'arraybuffer';
+            ws.onopen = () => {
+                document.getElementById('status').textContent = 'Connected';
+                document.getElementById('status').style.color = '#4CAF50';
+                addLog('WebSocket connected');
+            };
+            ws.onmessage = (event) => {
+                if (event.data instanceof ArrayBuffer) return;
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'connected') addLog('Session: ' + data.session_id);
+                    if (data.type === 'initialized') addLog('Language: ' + data.language);
+                    if (data.type === 'transcript') {
+                        addTranscript(data.text, data.language, 'user');
+                        addLog('Heard: "' + data.text + '"');
+                    }
+                    if (data.type === 'response') {
+                        addTranscript(data.text, data.language, 'agent');
+                        document.getElementById('response').textContent = data.text;
+                        const r = [];
+                        r.push('Intent: ' + data.intent);
+                        r.push('Reasoning: ' + (data.reasoning || ''));
+                        r.push('State: ' + (data.conversation_state || ''));
+                        if (data.tool_calls && data.tool_calls.length > 0)
+                            r.push('Tools: ' + JSON.stringify(data.tool_calls, null, 2));
+                        if (data.tool_results && data.tool_results.length > 0)
+                            r.push('Results: ' + JSON.stringify(data.tool_results, null, 2));
+                        document.getElementById('reasoning').textContent = r.join('\\n\\n');
+                    }
+                    if (data.type === 'latency') {
+                        const d = data.data || data;
+                        const lines = [
+                            'Total: ' + d.total_ms + 'ms ' + (d.under_target ? '✅' : '❌'),
+                            'STT: ' + d.stt_ms + 'ms',
+                            'Agent: ' + d.agent_ms + 'ms',
+                            'Tools: ' + d.tool_ms + 'ms',
+                            'TTS: ' + d.tts_first_byte_ms + 'ms'
+                        ];
+                        document.getElementById('latency').textContent = lines.join('\\n');
+                        document.getElementById('latency').style.color = d.under_target ? '#4CAF50' : '#f44336';
+                    }
+                    if (data.type === 'error') addLog('Error: ' + data.message);
+                } catch(e) { console.error(e); }
+            };
+            ws.onclose = () => {
+                document.getElementById('status').textContent = 'Disconnected';
+                document.getElementById('status').style.color = '#f44336';
+                addLog('Disconnected. Reconnecting...');
+                setTimeout(connectWS, 3000);
+            };
+        }
+
+        document.getElementById('initBtn').addEventListener('click', () => {
+            const pid = document.getElementById('patientId').value;
+            const lang = document.getElementById('language').value;
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({type:'init', patient_id: pid || SESSION_ID, language: lang}));
+                addLog('Initialized: patient=' + (pid||SESSION_ID) + ', lang=' + lang);
+            }
+        });
+
+        document.getElementById('sendBtn').addEventListener('click', () => {
+            const input = document.getElementById('textInput');
+            const text = input.value.trim();
+            if (text && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({type:'text', content: text}));
+                addTranscript(text, 'typed', 'user');
+                input.value = '';
+            }
+        });
+
+        document.getElementById('textInput').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') document.getElementById('sendBtn').click();
+        });
+
+        document.getElementById('interruptBtn').addEventListener('click', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({type:'interrupt'}));
+                addLog('Interrupted');
+            }
+        });
+
+        document.getElementById('recordBtn').addEventListener('click', async () => {
+            if (isRecording) return;
+            isRecording = true;
+            document.getElementById('recordBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = false;
+            document.getElementById('status').textContent = 'Recording...';
+            document.getElementById('status').style.color = '#f44336';
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: { sampleRate: 16000, channelCount: 1, echoCancellation: true, noiseSuppression: true }
+                });
+                audioContext = new AudioContext({ sampleRate: 16000 });
+                const source = audioContext.createMediaStreamSource(stream);
+                const processor = audioContext.createScriptProcessor(4096, 1, 1);
+                processor.onaudioprocess = (e) => {
+                    if (!isRecording) return;
+                    const input = e.inputBuffer.getChannelData(0);
+                    const pcm = new Int16Array(input.length);
+                    for (let i = 0; i < input.length; i++) {
+                        const s = Math.max(-1, Math.min(1, input[i]));
+                        pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                    }
+                    if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm.buffer);
+                };
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+                audioCapture = { stream, processor, source };
+            } catch(e) { addLog('Mic error: ' + e.message); isRecording = false; }
+        });
+
+        document.getElementById('stopBtn').addEventListener('click', () => {
+            isRecording = false;
+            document.getElementById('recordBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            document.getElementById('status').textContent = 'Processing...';
+            document.getElementById('status').style.color = '#FF9800';
+            if (audioCapture) {
+                audioCapture.processor.disconnect();
+                audioCapture.source.disconnect();
+                audioCapture.stream.getTracks().forEach(t => t.stop());
+                audioCapture = null;
+            }
+            if (audioContext) { audioContext.close(); audioContext = null; }
+            if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({type:'speech_end'}));
+        });
+
+        connectWS();
+    </script>
+</body>
+</html>"""
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return FRONTEND_HTML
 
 
 @app.websocket("/ws/{session_id}")
