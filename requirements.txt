@@ -13,6 +13,7 @@ pydantic==2.10.4
 pydantic-settings==2.7.1
 celery[redis]==5.4.0
 deepgram-sdk==3.8.0
+google-generativeai==0.8.5
 langdetect==1.0.9
 orjson==3.10.13
 soundfile==0.12.1
