@@ -1,15 +1,27 @@
+import ssl as ssl_module
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from backend.config import get_settings
 from backend.models import Base
 
 settings = get_settings()
 
+db_url = settings.database_url
+
+connect_args = {}
+if "neon.tech" in db_url or "sslmode" in db_url:
+    db_url = db_url.split("?")[0]
+    ssl_context = ssl_module.create_default_context()
+    ssl_context.check_hostname = False
+    ssl_context.verify_mode = ssl_module.CERT_NONE
+    connect_args["ssl"] = ssl_context
+
 engine = create_async_engine(
-    settings.database_url,
-    pool_size=20,
-    max_overflow=10,
+    db_url,
+    pool_size=5,
+    max_overflow=5,
     pool_pre_ping=True,
     echo=settings.debug,
+    connect_args=connect_args,
 )
 
 async_session_factory = async_sessionmaker(
